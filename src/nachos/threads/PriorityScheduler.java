@@ -150,7 +150,7 @@ public class PriorityScheduler extends Scheduler {
 		public KThread nextThread() {
 			Lib.my_assert(Machine.interrupt().disabled());
 			
-			ThreadState ts = pickNextThread();
+			ThreadState ts = peekNextThread();
 			
 			if (ts == null) {
 				//we have no more threads?
@@ -167,7 +167,7 @@ public class PriorityScheduler extends Scheduler {
 		 * 
 		 * @return the next thread that <tt>nextThread()</tt> would return.
 		 */
-		protected ThreadState pickNextThread() {
+		protected ThreadState peekNextThread() {
 			Integer pr = priorityMaximum;
 			while (pr >= priorityMinimum && !waiting.containsKey(pr)) {
 				pr--;
@@ -199,6 +199,12 @@ public class PriorityScheduler extends Scheduler {
 			//add it to the beginning of the queue 
 			//	the last element is considered to be the TOP
 			queue.add(0, ts);
+		}
+		
+		protected boolean noHigherPriority(ThreadState ts) {
+			ThreadState ps = peekNextThread();
+			//either no waiting threads, or lower priority than us
+			return (ps == null || ps.getPriority() < ts.getPriority());
 		}
 		
 		protected ThreadState getSavedState(KThread t){
@@ -252,8 +258,12 @@ public class PriorityScheduler extends Scheduler {
 		}
 
 		/**
-		 * Return the effective priority of the associated thread.
-		 * 
+		 * Get the effective priority of the specified thread. Must be called with interrupts disabled.
+		 * <br/>
+	     * The effective priority of a thread is the priority of a thread after taking into account 
+	     * priority donations.
+		 * For a priority scheduler, this is the maximum of the thread's priority and the priorities 
+		 * of all other threads waiting for the thread through a lock or a join. 
 		 * @return the effective priority of the associated thread.
 		 */
 		public int getEffectivePriority() {
@@ -289,7 +299,7 @@ public class PriorityScheduler extends Scheduler {
 		 * @see nachos.threads.ThreadQueue#waitForAccess
 		 */
 		public void waitForAccess(PriorityQueue waitQueue) {
-			// implement me
+			waitQueue.putToWait(this);
 		}
 
 		/**
@@ -303,7 +313,7 @@ public class PriorityScheduler extends Scheduler {
 		 * @see nachos.threads.ThreadQueue#nextThread
 		 */
 		public void acquire(PriorityQueue waitQueue) {
-			// implement me
+			Lib.my_assert(waitQueue.noHigherPriority(this));
 		}
 
 		/** The thread with which this object is associated. */
