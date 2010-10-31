@@ -20,7 +20,7 @@ import java.util.Iterator;
  * that has been waiting longest.
  * 
  * <p>
- * Essentially, a priority scheduler gives access in a round-robin fassion to
+ * Essentially, a priority scheduler gives access in a round-robin fashion to
  * all the highest-priority threads, and ignores all other threads. This has the
  * potential to starve a thread if there's always a thread waiting with higher
  * priority.
@@ -67,6 +67,8 @@ public class PriorityScheduler extends Scheduler {
 				&& priority <= priorityMaximum);
 
 		getThreadState(thread).setPriority(priority);
+		
+		
 	}
 
 	public boolean increasePriority() {
@@ -134,29 +136,36 @@ public class PriorityScheduler extends Scheduler {
 		PriorityQueue(boolean transferPriority) {
 			this.transferPriority = transferPriority;
 			this.waiting = new HashMap<Integer, List<ThreadState>>();
-			this.states = new HashMap<KThread, ThreadState>();
 		}
 
 		public void waitForAccess(KThread thread) {
 			Lib.my_assert(Machine.interrupt().disabled());
-			getSavedState(thread).waitForAccess(this);
+			ThreadState ts = getSavedState(thread);
+			putToWait(ts);
+			ts.waitForAccess(this);
 		}
 
 		public void acquire(KThread thread) {
 			Lib.my_assert(Machine.interrupt().disabled());
+			myThread = thread;
 			getSavedState(thread).acquire(this);
 		}
 
 		public KThread nextThread() {
 			Lib.my_assert(Machine.interrupt().disabled());
 			
-			ThreadState ts = pickNextThread();
+			if (myThread!=null) {
+				getSavedState(myThread).rewokeOwnership();
+			}
+			
+			ThreadState ts = peekNextThread();
 			
 			if (ts == null) {
 				//we have no more threads?
 				return null;
 			} else {
 				waiting.get(ts.getPriority()).remove(ts);
+				myThread = ts.thread;
 				return ts.thread;
 			}
 		}
@@ -167,7 +176,7 @@ public class PriorityScheduler extends Scheduler {
 		 * 
 		 * @return the next thread that <tt>nextThread()</tt> would return.
 		 */
-		protected ThreadState pickNextThread() {
+		protected ThreadState peekNextThread() {
 			Integer pr = priorityMaximum;
 			while (pr >= priorityMinimum && !waiting.containsKey(pr)) {
 				pr--;
@@ -186,6 +195,12 @@ public class PriorityScheduler extends Scheduler {
 			// implement me (if you want)
 		}
 		
+		protected void removeFromWait(ThreadState ts) {
+			Integer priority = ts.getPriority();
+			Lib.my_assert(waiting.containsKey(priority) && waiting.get(priority).contains(ts));
+			waiting.get(priority).remove(ts);
+		}
+		
 		protected void putToWait(ThreadState ts) {
 			Integer priority = ts.getPriority();
 			if (!waiting.containsKey(priority)) {
@@ -201,13 +216,24 @@ public class PriorityScheduler extends Scheduler {
 			queue.add(0, ts);
 		}
 		
+		protected boolean noHigherPriority(ThreadState ts) {
+			ThreadState ps = peekNextThread();
+			//either no waiting threads, or lower priority than us
+			return (ps == null || ps.getPriority() < ts.getPriority());
+		}
+		
 		protected ThreadState getSavedState(KThread t){
-			if (states.containsKey(t)) {
-				return states.get(t);
+			if (t.schedulingState == null) {
+				t.schedulingState = new ThreadState(t);  
+			}
+			return (ThreadState) t.schedulingState;
+		}
+		
+		protected ThreadState getOwnerThreadState(){
+			if (myThread != null) {
+				return getSavedState(myThread);
 			} else {
-				ThreadState ts = new ThreadState(t);
-				states.put(t, ts);
-				return ts;
+				return null;
 			}
 		}
 
@@ -218,7 +244,7 @@ public class PriorityScheduler extends Scheduler {
 		public boolean transferPriority;
 		
 		public HashMap<Integer, List<ThreadState>> waiting;
-		public HashMap<KThread, ThreadState> states;
+		public KThread myThread;
 	}
 
 	/**
@@ -253,13 +279,16 @@ public class PriorityScheduler extends Scheduler {
 		}
 
 		/**
-		 * Return the effective priority of the associated thread.
-		 * 
+		 * Get the effective priority of the specified thread. Must be called with interrupts disabled.
+		 * <br/>
+	     * The effective priority of a thread is the priority of a thread after taking into account 
+	     * priority donations.
+		 * For a priority scheduler, this is the maximum of the thread's priority and the priorities 
+		 * of all other threads waiting for the thread through a lock or a join. 
 		 * @return the effective priority of the associated thread.
 		 */
 		public int getEffectivePriority() {
-			// implement me
-			return priority;
+			return (effectivePriority==null) ? priority : effectivePriority;
 		}
 
 		/**
@@ -271,10 +300,15 @@ public class PriorityScheduler extends Scheduler {
 		public void setPriority(int priority) {
 			if (this.priority == priority)
 				return;
-
+			
 			this.priority = priority;
-
-			// implement me
+		}
+		
+		private void setEffectivePriority(int priority) {
+			effectivePriority = priority;
+			if (effectivePriority.equals(priority)) {
+				effectivePriority = null;
+			}
 		}
 
 		/**
@@ -290,7 +324,15 @@ public class PriorityScheduler extends Scheduler {
 		 * @see nachos.threads.ThreadQueue#waitForAccess
 		 */
 		public void waitForAccess(PriorityQueue waitQueue) {
-			// implement me
+			refreshEffectivePriority(waitQueue);
+		}
+
+		private void refreshEffectivePriority(PriorityQueue waitQueue) {
+			if (waitQueue.transferPriority == true && myQueue != null) {
+				if (this.getPriority() > waitQueue.getOwnerThreadState().getPriority()){
+					waitQueue.getOwnerThreadState().setEffectivePriority(this.getPriority());
+				}
+			}
 		}
 
 		/**
@@ -304,12 +346,20 @@ public class PriorityScheduler extends Scheduler {
 		 * @see nachos.threads.ThreadQueue#nextThread
 		 */
 		public void acquire(PriorityQueue waitQueue) {
-			// implement me
+			Lib.my_assert(waitQueue.noHigherPriority(this));
+			myQueue = waitQueue;
+		}
+		
+		public void rewokeOwnership() {
+			myQueue = null;
 		}
 
 		/** The thread with which this object is associated. */
 		protected KThread thread;
 		/** The priority of the associated thread. */
 		protected int priority;
+		protected Integer effectivePriority;
+		
+		private PriorityQueue myQueue;
 	}
 }
