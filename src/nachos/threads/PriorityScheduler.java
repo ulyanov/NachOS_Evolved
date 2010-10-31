@@ -248,6 +248,7 @@ public class PriorityScheduler extends Scheduler {
 		 * @return the priority of the associated thread.
 		 */
 		public int getPriority() {
+			//szopsz faszt
 			return priority;
 		}
 
